@@ -7,13 +7,13 @@ from typing import List, Set, Tuple, Optional
 
 from .entities import Message, SharedFile
 from .file_lock import FileLock
-from ..utils import get_admin_passcode
 
 class ChatModel:
     _instance = None
     HISTORY_FILE = os.path.join(os.path.expanduser('~'), '.acr_chat', 'chat_history.json')
     USERS_FILE = os.path.join(os.path.expanduser('~'), '.acr_chat', 'active_users.json')
     FILES_FILE = os.path.join(os.path.expanduser('~'), '.acr_chat', 'shared_files.json')
+    ADMIN_PASSCODE = "acr2024"  # Hardcoded admin passcode
     
     def __new__(cls):
         if cls._instance is None:
@@ -257,4 +257,4 @@ class ChatModel:
     @classmethod
     def verify_admin_passcode(cls, passcode: str) -> bool:
         """Verify if the provided passcode matches the admin passcode."""
-        return passcode == get_admin_passcode() 
+        return passcode == cls.ADMIN_PASSCODE 

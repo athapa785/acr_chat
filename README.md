@@ -15,7 +15,6 @@ A real-time chat application built with Python and PyQt5, supporting multiple in
 
 - Python 3.6+
 - PyQt5 >= 5.15.0
-- python-dotenv >= 0.19.0
 
 ## Installation
 
@@ -28,11 +27,6 @@ A real-time chat application built with Python and PyQt5, supporting multiple in
 2. Install dependencies:
    ```bash
    pip install -r requirements.txt
-   ```
-
-3. Create a `.env` file in the project root with your admin passcode:
-   ```
-   ADMIN_PASSCODE=your_admin_passcode
    ```
 
 ## Usage
@@ -51,6 +45,7 @@ Multiple instances can be started to simulate different users.
 - Archive and clear shared files list
 
 Access admin features by clicking the gear icon (⚙) in the top-left corner.
+Default admin passcode is "acr2024".
 
 ## Data Storage
 
