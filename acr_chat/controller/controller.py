@@ -11,21 +11,28 @@ class ChatController(QObject):
     files_updated = pyqtSignal(list)  # List[SharedFile]
     login_failed = pyqtSignal(str)  # error message
     
+    ADMIN_PASSWORD = "admin123"  # Hardcoded admin password
+    
     def __init__(self):
         super().__init__()
         self.model = ChatModel()
         self.current_user: Optional[str] = None
         
-    def attempt_login(self, username: str) -> bool:
-        """Try to log in with the given username."""
+    def attempt_login(self, username: str, password: str = None) -> bool:
+        """Try to log in with the given username and optional admin password."""
         if not username.strip():
             self.login_failed.emit("Username cannot be empty")
             return False
             
+        # Check for admin login
+        if username.lower() == "admin":
+            if password != self.ADMIN_PASSWORD:
+                self.login_failed.emit("Invalid admin password")
+                return False
+                
         success, error_msg = self.model.add_user(username)
         if success:
             self.current_user = username
-            # Notify other instances about the new user
             self.user_added.emit(username)
             return True
         else:
@@ -48,6 +55,8 @@ class ChatController(QObject):
             self.model.add_message(self.current_user, content, timestamp)
             # Notify all instances about the new message
             self.message_received.emit(self.current_user, content, timestamp)
+            # Also notify about any user changes
+            self.user_added.emit(self.current_user)
             
     def get_all_users(self) -> List[str]:
         """Get list of all active users."""
@@ -65,7 +74,10 @@ class ChatController(QObject):
         """Add a file to the shared files list."""
         if self.current_user:
             self.model.add_shared_file(filepath, self.current_user)
+            # Notify about the new file
             self.files_updated.emit(self.model.get_shared_files())
+            # Also notify about any user changes
+            self.user_added.emit(self.current_user)
             return True
         return False
         

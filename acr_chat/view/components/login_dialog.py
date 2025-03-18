@@ -19,6 +19,16 @@ class LoginDialog(QDialog):
         username_layout.addWidget(username_label)
         username_layout.addWidget(self.username_input)
         
+        # Password field (initially hidden)
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("Enter admin password")
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_label = QLabel("Password:")
+        self.password_label.hide()
+        self.password_input.hide()
+        username_layout.addWidget(self.password_label)
+        username_layout.addWidget(self.password_input)
+        
         # Buttons
         button_layout = QHBoxLayout()
         
@@ -42,6 +52,16 @@ class LoginDialog(QDialog):
         # Set focus to username input
         self.username_input.setFocus()
         
+        # Connect username changes to toggle password field
+        self.username_input.textChanged.connect(self.toggle_password_field)
+        
+    def toggle_password_field(self, username):
+        """Show/hide password field based on username."""
+        is_admin = username.lower() == "admin"
+        self.password_label.setVisible(is_admin)
+        self.password_input.setVisible(is_admin)
+        self.adjustSize()
+        
     def handle_login(self):
         username = self.username_input.text().strip()
         if not username:
@@ -51,6 +71,10 @@ class LoginDialog(QDialog):
             
         self.username = username
         self.accept()
+        
+    def get_credentials(self):
+        """Return the entered username and password (if any)."""
+        return self.username_input.text(), self.password_input.text()
         
     @staticmethod
     def get_username(parent=None):

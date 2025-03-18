@@ -1,139 +1,199 @@
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
-                         QSplitter, QLabel, QMessageBox, QApplication, QPushButton)
-from PyQt5.QtCore import Qt, QFileSystemWatcher
-from .components import ChatInput, ChatHistory, UsersList, DirectoryView, LoginDialog, AdminDialog
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
+    QSplitter, QLabel, QMessageBox, QApplication, QDialog, QPushButton, QFrame, QMenu,
+    QLineEdit, QDialogButtonBox, QVBoxLayout
+)
+from PyQt5.QtCore import Qt, QFileSystemWatcher, QTimer
+from PyQt5.QtGui import QCursor, QIcon
+from .components import ChatInput, ChatHistory, UsersList, DirectoryView, LoginDialog
 from ..controller.controller import ChatController
+from ..model.chat_model import SharedFile
 from datetime import datetime
 import os
 import subprocess
 import platform
+import json
+from typing import List
+import sys
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        # Initialize instance variables
         self.controller = ChatController()
-        self.setup_controller_connections()
-        
-        # Initialize UI components to None
         self.users_list = None
         self.chat_history = None
         self.chat_input = None
         self.directory_view = None
         
-        # Set up file watchers
-        self.watcher = QFileSystemWatcher(self)
-        self.watcher.addPath(self.controller.model.HISTORY_FILE)
-        self.watcher.addPath(self.controller.model.USERS_FILE)
-        self.watcher.fileChanged.connect(self.on_file_changed)
+        # Initialize timers for file checking
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.check_files)
         
+        # Set up signal connections before login
+        self.setup_signals()
+        
+        # Initialize login
         self.init_login()
         
-    def setup_controller_connections(self):
-        """Set up signal connections from controller."""
-        self.controller.user_added.connect(self.on_user_added)
-        self.controller.user_removed.connect(self.on_user_removed)
-        self.controller.message_received.connect(self.on_message_received)
-        self.controller.files_updated.connect(self.on_files_updated)
-        self.controller.login_failed.connect(self.on_login_failed)
+    def setup_signals(self):
+        """Set up signal connections."""
+        self.controller.message_received.connect(self.handle_message_received)
+        self.controller.user_added.connect(self.handle_user_added)
+        self.controller.user_removed.connect(self.handle_user_removed)
+        self.controller.files_updated.connect(self.handle_files_updated)
+        self.controller.login_failed.connect(self.handle_login_failed)
         
     def init_login(self):
         """Initialize login dialog."""
-        username = LoginDialog.get_username(self)
-        if username and self.controller.attempt_login(username):
-            self.setWindowTitle(f"ACR Chat - {username}")
-            self.init_ui()
-            # Load existing data after UI is initialized
-            self.update_users_list(self.controller.get_all_users())
-            # Load chat history with timestamps
-            messages = self.controller.get_chat_history()
-            for msg in messages:
-                self.chat_history.add_message(
-                    msg.sender,
-                    msg.content,
-                    msg.timestamp
-                )
-        else:
-            self.close()
+        dialog = LoginDialog(self)
+        while True:
+            if dialog.exec_() == QDialog.Accepted:
+                username, password = dialog.get_credentials()
+                if self.controller.attempt_login(username, password):
+                    self.setWindowTitle(f"ACR Chat - {username}")
+                    self.init_ui()
+                    self.setup_file_checking()  # Set up periodic file checking
+                    self.load_initial_data()
+                    break
+            else:
+                sys.exit()
             
+    def setup_file_checking(self):
+        """Set up periodic file checking."""
+        # Ensure the directory exists
+        data_dir = os.path.dirname(self.controller.model.HISTORY_FILE)
+        os.makedirs(data_dir, exist_ok=True)
+        
+        # Create empty files if they don't exist
+        for file_path in [
+            self.controller.model.HISTORY_FILE,
+            self.controller.model.USERS_FILE,
+            self.controller.model.FILES_FILE
+        ]:
+            if not os.path.exists(file_path):
+                with open(file_path, 'w') as f:
+                    json.dump([], f)
+
+        # Start the timer to check files every 100ms
+        self.update_timer.start(100)
+        
+    def check_files(self):
+        """Check files for changes and update UI accordingly."""
+        try:
+            # Check chat history - always update to ensure we don't miss changes
+            messages = self.controller.model.get_all_messages()
+            if self.chat_history:
+                # Store current scroll position
+                current_scroll = self.chat_history.messages.verticalScrollBar().value()
+                
+                # Only update if messages have changed
+                current_messages = self.chat_history.messages.toPlainText()
+                new_messages = "\n".join(f"[{msg.timestamp.strftime('%H:%M:%S')}] <b>{msg.sender}:</b> {msg.content}" for msg in messages)
+                
+                if current_messages != new_messages:
+                    self.chat_history.messages.clear()
+                    for msg in messages:
+                        self.chat_history.messages.append(f'[{msg.timestamp.strftime("%H:%M:%S")}] <b>{msg.sender}:</b> {msg.content}')
+                    
+                    # Restore scroll position
+                    self.chat_history.messages.verticalScrollBar().setValue(current_scroll)
+                    
+            # Check users list
+            users = self.controller.get_all_users()
+            if self.users_list:
+                current_users = set()
+                for i in range(self.users_list.users_list.count()):
+                    current_users.add(self.users_list.users_list.item(i).text())
+                if current_users != set(users):
+                    self.users_list.update_users(users)
+
+            # Check shared files
+            files = self.controller.model.get_shared_files()
+            if self.directory_view:
+                current_files = set()
+                for row in range(self.directory_view.files_table.rowCount()):
+                    file_path = self.directory_view.files_table.item(row, 0).data(Qt.UserRole)
+                    current_files.add(file_path)
+                new_files = set(f.filepath for f in files)
+                if current_files != new_files:
+                    self.directory_view.update_files(files)
+                    
+        except Exception:
+            pass  # Silently handle any errors during file checking
+        
     def init_ui(self):
         # Create main widget and layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
+        
         main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(10, 10, 10, 10)  # Add some padding around the edges
+        main_layout.setContentsMargins(5, 5, 5, 5)  # Reduced from 10 to 5
+        main_layout.setSpacing(2)  # Add minimal spacing between elements
         main_widget.setLayout(main_layout)
         
-        # Create left panel for users list and admin button
+        # Create left panel for users list
         left_panel = QWidget()
         left_layout = QVBoxLayout()
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        left_layout.setSpacing(2)  # Minimal spacing
+        left_panel.setLayout(left_layout)
         
-        # Create header with admin button and "Online Users" label
+        # Add header with admin button and "Online Users" label
         header_widget = QWidget()
         header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Add admin button (small and discrete)
-        admin_button = QPushButton("⚙")  # Gear emoji as icon
-        admin_button.setFixedSize(24, 24)
-        admin_button.setToolTip("Admin Functions")
-        admin_button.clicked.connect(self.show_admin_dialog)
-        admin_button.setStyleSheet("""
-            QPushButton {
-                font-size: 14px;
-                background-color: #f0f0f0;
-                border: 1px solid #ccc;
-                border-radius: 12px;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
-        
-        # Add "Online Users" label
-        users_label = QLabel("Online Users")
-        users_label.setStyleSheet("""
-            QLabel {
-                font-size: 12pt;
-                font-weight: bold;
-                color: #2196F3;
-            }
-        """)
-        
-        header_layout.addWidget(admin_button)
-        header_layout.addWidget(users_label)
-        header_layout.addStretch()
+        header_layout.setContentsMargins(2, 2, 2, 2)  # Minimal margins
+        header_layout.setSpacing(4)  # Slightly larger spacing for header items
         header_widget.setLayout(header_layout)
         
+        # Admin button
+        admin_button = QPushButton("⚙")  # Gear emoji as icon 
+        admin_button.setFixedSize(24, 24)
+        admin_button.setToolTip("Admin Settings")
+        admin_button.clicked.connect(self.show_admin_dialog)
+        header_layout.addWidget(admin_button)
+        
+        # Online Users label
+        online_label = QLabel("Online Users")
+        online_label.setStyleSheet("""
+            QLabel {
+                font-size: 11pt;
+                font-weight: bold;
+                color: #2196F3;
+                padding: 2px;
+            }
+        """)
+        header_layout.addWidget(online_label)
+        header_layout.addStretch()
+        
         left_layout.addWidget(header_widget)
+        
+        # Add users list below header
         self.users_list = UsersList()
         left_layout.addWidget(self.users_list)
-        left_panel.setLayout(left_layout)
         
         # Create center panel for chat
         center_widget = QWidget()
         center_layout = QVBoxLayout()
-        center_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins to maximize chat space
+        center_layout.setContentsMargins(2, 0, 2, 0)  # Minimal left/right margins
+        center_layout.setSpacing(2)  # Minimal spacing
         center_widget.setLayout(center_layout)
         
-        # Add username display
-        username_label = QLabel(f"Logged in as: {self.controller.current_user}")
-        username_label.setAlignment(Qt.AlignCenter)
-        username_label.setStyleSheet("""
-            QLabel {
-                font-size: 12pt;
-                font-weight: bold;
-                color: #2196F3;
-                padding: 10px;
-                border-bottom: 1px solid #ddd;
-            }
-        """)
-        center_layout.addWidget(username_label)
+        # Add a thinner separator line
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setMaximumHeight(1)  # Make the line thinner
+        separator.setStyleSheet("background-color: #E0E0E0;")  # Lighter color
+        center_layout.addWidget(separator)
         
         self.chat_history = ChatHistory()
         self.chat_input = ChatInput()
         
-        center_layout.addWidget(self.chat_history, stretch=1)  # Give chat history all available vertical space
+        # Set username in chat history
+        self.chat_history.set_username(self.controller.current_user)
+        
+        center_layout.addWidget(self.chat_history, stretch=1)
         center_layout.addWidget(self.chat_input)
         
         # Create right panel for directory view
@@ -146,10 +206,10 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.directory_view)
         
         # Set initial sizes (users:chat:files ratio of 1:3:1.5)
-        total_width = 1000  # Use a base width for proportions
-        users_width = total_width // 6     # ~17%
-        files_width = total_width // 4     # 25%
-        chat_width = total_width - users_width - files_width  # Remaining space
+        total_width = 1000
+        users_width = total_width // 6
+        files_width = total_width // 4
+        chat_width = total_width - users_width - files_width
         splitter.setSizes([users_width, chat_width, files_width])
         
         main_layout.addWidget(splitter)
@@ -160,36 +220,37 @@ class MainWindow(QMainWindow):
         self.directory_view.file_selected.connect(self.handle_file_selected)
         self.directory_view.file_added.connect(self.handle_file_added)
         
-        # Set up file watcher for shared files
-        self.watcher.addPath(self.controller.model.FILES_FILE)
-        
-        # Load initial shared files
-        self.directory_view.update_files(self.controller.get_shared_files())
-        
         # Set window size and position
         screen = QApplication.primaryScreen().geometry()
         self.setGeometry(
-            screen.width() // 6,      # X position
-            screen.height() // 6,     # Y position
-            (screen.width() * 2) // 3,  # Width (2/3 of screen width)
-            (screen.height() * 2) // 3  # Height (2/3 of screen height)
+            screen.width() // 6,
+            screen.height() // 6,
+            (screen.width() * 2) // 3,
+            (screen.height() * 2) // 3
         )
         
-        # Make window visible
         self.show()
         
     def closeEvent(self, event):
         """Handle window close event."""
-        self.controller.logout()
+        if self.controller.current_user:
+            self.controller.logout()
+            self.update_timer.stop()
+            users = self.controller.get_all_users()
+            if self.users_list:
+                self.users_list.update_users(users)
         event.accept()
         
     # Signal handlers
     def handle_message_sent(self, message: str):
         """Handle when a message is sent from this instance."""
         self.controller.send_message(message)
-        # Update users list in case it changed
-        self.update_users_list(self.controller.get_all_users())
-        
+        messages = self.controller.model.get_all_messages()
+        if self.chat_history:
+            self.chat_history.clear()
+            for msg in messages:
+                self.chat_history.add_message(msg.sender, msg.content, msg.timestamp)
+                
     def handle_user_selected(self, username: str):
         # TODO: Implement private messaging or user info display
         pass
@@ -215,108 +276,151 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not open file: {e}")
             
-    def on_user_added(self, username: str):
-        """Handle when a new user joins."""
-        if self.users_list:
-            self.update_users_list(self.controller.get_all_users())
-        
-    def on_user_removed(self, username: str):
-        """Handle when a user leaves."""
-        if self.users_list:
-            self.update_users_list(self.controller.get_all_users())
-        
-    def on_message_received(self, sender: str, content: str, timestamp: datetime):
-        """Handle when a new message is received from any instance."""
+    def handle_message_received(self, sender: str, content: str, timestamp: datetime):
+        """Handle a new message being received."""
         if self.chat_history:
             self.chat_history.add_message(sender, content, timestamp)
-            # Update users list in case it changed
-            self.update_users_list(self.controller.get_all_users())
+            
+    def handle_user_added(self, username: str):
+        """Handle a user being added."""
+        if self.users_list:
+            users = self.controller.get_all_users()
+            self.users_list.update_users(users)
         
-    def on_files_updated(self, files: list):
+    def handle_user_removed(self, username: str):
+        """Handle a user being removed."""
+        if self.users_list:
+            users = self.controller.get_all_users()
+            self.users_list.update_users(users)
+        
+    def handle_files_updated(self, files: List[SharedFile]):
+        """Handle shared files being updated."""
         if self.directory_view:
             self.directory_view.update_files(files)
         
-    def on_login_failed(self, error_msg: str):
-        QMessageBox.warning(self, "Login Error", error_msg)
+    def handle_login_failed(self, error_msg: str):
+        """Handle a failed login attempt."""
+        QMessageBox.warning(self, "Login Failed", error_msg)
         
     def update_users_list(self, users: list):
         if self.users_list:
             self.users_list.update_users(users)
+
+    def load_initial_data(self):
+        """Load initial data after successful login."""
+        # Load and display active users
+        users = self.controller.get_all_users()
+        if self.users_list:
+            self.users_list.update_users(users)
         
-    def on_file_changed(self, path: str):
-        """Handle when any watched file changes."""
-        if path == self.controller.model.FILES_FILE:
-            # Reload shared files
-            self.directory_view.update_files(self.controller.get_shared_files())
-        elif path == self.controller.model.HISTORY_FILE:
-            # Reload messages
-            messages = self.controller.get_chat_history()
-            if self.chat_history:
-                # Clear current messages
-                self.chat_history.clear()
-                # Add all messages
-                for msg in messages:
-                    self.chat_history.add_message(
-                        msg.sender,
-                        msg.content,
-                        msg.timestamp
-                    )
-        elif path == self.controller.model.USERS_FILE:
-            # Reload users
-            if self.users_list:
-                self.update_users_list(self.controller.get_all_users())
-                
-        # Re-add the path to the watcher
-        self.watcher.addPath(path)
+        # Load and display chat history
+        messages = self.controller.model.get_all_messages()
+        if self.chat_history:
+            for msg in messages:
+                self.chat_history.add_message(msg.sender, msg.content, msg.timestamp)
+            
+        # Load and display shared files
+        files = self.controller.model.get_shared_files()
+        if self.directory_view:
+            self.directory_view.update_files(files)
 
     def show_admin_dialog(self):
-        """Show the admin dialog and handle admin functions."""
-        passcode = AdminDialog.get_passcode(self)
-        if passcode and self.controller.model.verify_admin_passcode(passcode):
-            # Create admin actions dialog with separate buttons
-            admin_dialog = QMessageBox(self)
-            admin_dialog.setWindowTitle("Admin Actions")
-            admin_dialog.setText("Choose an administrative action:")
-            
-            # Add custom buttons
-            clear_users = admin_dialog.addButton("Clear Online Users", QMessageBox.ActionRole)
-            archive_chat = admin_dialog.addButton("Archive Chat History", QMessageBox.ActionRole)
-            archive_files = admin_dialog.addButton("Archive Shared Files", QMessageBox.ActionRole)
-            cancel = admin_dialog.addButton(QMessageBox.Cancel)
-            
-            admin_dialog.exec_()
-            clicked_button = admin_dialog.clickedButton()
-            
-            if clicked_button == clear_users:
-                self.controller.model.clear_all_users()
-                QMessageBox.information(self, "Success", "All users have been logged out.")
-                self.close()  # Close this instance too
-                
-            elif clicked_button == archive_chat:
-                success, result = self.controller.model.archive_chat_history()
-                if success:
-                    QMessageBox.information(
-                        self,
-                        "Success",
-                        f"Chat history has been archived to:\n{result}\n\nA new chat has been started."
-                    )
-                    # Refresh the chat history display
-                    self.chat_history.clear()
-                else:
-                    QMessageBox.warning(self, "Error", f"Failed to archive chat: {result}")
-                    
-            elif clicked_button == archive_files:
-                success, result = self.controller.model.archive_shared_files()
-                if success:
-                    QMessageBox.information(
-                        self,
-                        "Success",
-                        f"Shared files list has been archived to:\n{result}\n\nShared files list has been cleared."
-                    )
-                    # Refresh the files display
-                    self.directory_view.update_files([])
-                else:
-                    QMessageBox.warning(self, "Error", f"Failed to archive shared files: {result}")
+        """Show the admin dialog with passcode and action buttons."""
+        dialog = AdminDialog(self)
         
-        elif passcode:  # Wrong passcode
-            QMessageBox.warning(self, "Error", "Invalid admin passcode!")
+        # Connect admin action buttons
+        dialog.logout_all_btn.clicked.connect(lambda: self.handle_admin_action(dialog, self.admin_logout_all))
+        dialog.archive_chat_btn.clicked.connect(lambda: self.handle_admin_action(dialog, self.admin_archive_chat))
+        dialog.archive_files_btn.clicked.connect(lambda: self.handle_admin_action(dialog, self.admin_archive_files))
+        
+        dialog.exec_()
+        
+    def handle_admin_action(self, dialog, action_func):
+        """Handle admin action button clicks."""
+        if dialog.passcode_input.text() == "admin123":  # You can change this passcode
+            action_func()
+            dialog.accept()
+        else:
+            QMessageBox.warning(self, "Error", "Invalid admin passcode")
+
+    def admin_logout_all(self):
+        """Admin action to log out all users."""
+        try:
+            self.controller.model.clear_active_users()
+            QMessageBox.information(self, "Success", "All users have been logged out")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to log out users: {e}")
+
+    def admin_archive_chat(self):
+        """Admin action to archive chat history."""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            archive_file = os.path.join(
+                os.path.dirname(self.controller.model.HISTORY_FILE),
+                f"chat_history_archive_{timestamp}.json"
+            )
+            with open(self.controller.model.HISTORY_FILE, 'r') as src, open(archive_file, 'w') as dst:
+                dst.write(src.read())
+            # Clear current chat history
+            with open(self.controller.model.HISTORY_FILE, 'w') as f:
+                json.dump([], f)
+            QMessageBox.information(self, "Success", f"Chat history archived to {archive_file}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to archive chat: {e}")
+
+    def admin_archive_files(self):
+        """Admin action to archive shared files list."""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            archive_file = os.path.join(
+                os.path.dirname(self.controller.model.FILES_FILE),
+                f"shared_files_archive_{timestamp}.json"
+            )
+            with open(self.controller.model.FILES_FILE, 'r') as src, open(archive_file, 'w') as dst:
+                dst.write(src.read())
+            # Clear current shared files
+            with open(self.controller.model.FILES_FILE, 'w') as f:
+                json.dump([], f)
+            QMessageBox.information(self, "Success", f"Shared files list archived to {archive_file}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to archive files: {e}")
+
+class AdminDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Admin Actions")
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        
+        # Passcode input
+        self.passcode_input = QLineEdit()
+        self.passcode_input.setEchoMode(QLineEdit.Password)
+        self.passcode_input.setPlaceholderText("Enter admin passcode")
+        layout.addWidget(self.passcode_input)
+        
+        # Action buttons
+        self.button_box = QDialogButtonBox()
+        self.logout_all_btn = self.button_box.addButton("Log Out All Users", QDialogButtonBox.ActionRole)
+        self.archive_chat_btn = self.button_box.addButton("Archive Chat History", QDialogButtonBox.ActionRole)
+        self.archive_files_btn = self.button_box.addButton("Archive Shared Files", QDialogButtonBox.ActionRole)
+        self.cancel_btn = self.button_box.addButton(QDialogButtonBox.Cancel)
+        
+        # Initially disable action buttons
+        self.logout_all_btn.setEnabled(False)
+        self.archive_chat_btn.setEnabled(False)
+        self.archive_files_btn.setEnabled(False)
+        
+        layout.addWidget(self.button_box)
+        self.setLayout(layout)
+        
+        # Connect signals
+        self.passcode_input.textChanged.connect(self.validate_passcode)
+        self.cancel_btn.clicked.connect(self.reject)
+        
+    def validate_passcode(self, text):
+        # Enable buttons if passcode is correct
+        is_valid = (text == "admin123")  # You can change this passcode
+        self.logout_all_btn.setEnabled(is_valid)
+        self.archive_chat_btn.setEnabled(is_valid)
+        self.archive_files_btn.setEnabled(is_valid)

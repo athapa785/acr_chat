@@ -26,6 +26,7 @@ class ChatModel:
             return
             
         self._initialized = True
+        
         # Initialize empty collections first
         self.active_users: Set[str] = set()
         self.messages: List[Message] = []
@@ -45,19 +46,19 @@ class ChatModel:
             os.makedirs(os.path.dirname(self.HISTORY_FILE), exist_ok=True)
             
             if not os.path.exists(self.HISTORY_FILE):
-                with open(self.HISTORY_FILE, 'w') as f:
-                    with FileLock(f):
-                        json.dump([], f, indent=2)
+                with FileLock(self.HISTORY_FILE) as f:
+                    f.seek(0)
+                    json.dump([], f, indent=2)
                 
             if not os.path.exists(self.USERS_FILE):
-                with open(self.USERS_FILE, 'w') as f:
-                    with FileLock(f):
-                        json.dump([], f, indent=2)
+                with FileLock(self.USERS_FILE) as f:
+                    f.seek(0)
+                    json.dump([], f, indent=2)
                 
             if not os.path.exists(self.FILES_FILE):
-                with open(self.FILES_FILE, 'w') as f:
-                    with FileLock(f):
-                        json.dump([], f, indent=2)
+                with FileLock(self.FILES_FILE) as f:
+                    f.seek(0)
+                    json.dump([], f, indent=2)
         except Exception as e:
             raise RuntimeError(f"Failed to create necessary files: {str(e)}")
     
@@ -111,13 +112,18 @@ class ChatModel:
             
             if username in self.active_users:
                 self.active_users.remove(username)
-                self.save_active_users()
+                # Don't merge with existing users when removing
+                with FileLock(self.USERS_FILE) as f:
+                    f.seek(0)
+                    f.truncate()
+                    json.dump(list(self.active_users), f, indent=2)
                 return True, None
             return False, "User not found"
         except Exception as e:
             return False, f"Failed to remove user: {str(e)}"
             
     def get_all_users(self) -> List[str]:
+        """Get list of all active users."""
         try:
             self.load_active_users()  # Always reload to get fresh state
             return sorted(list(self.active_users))
@@ -125,136 +131,103 @@ class ChatModel:
             return []
         
     def get_all_messages(self) -> List[Message]:
+        """Get list of all messages."""
         try:
-            # Always reload to get fresh state
-            self.load_chat_history()
+            self.load_chat_history()  # Always reload to get fresh state
             return sorted(self.messages, key=lambda m: m.timestamp)
         except Exception:
             return []
         
     def get_shared_files(self) -> List[SharedFile]:
+        """Get list of shared files."""
         try:
-            # Always reload to get fresh state
-            self.load_shared_files()
+            self.load_shared_files()  # Always reload to get fresh state
             # Filter out files that no longer exist
             self.shared_files = [f for f in self.shared_files if Path(f.filepath).exists()]
-            self.save_shared_files()
             return sorted(self.shared_files, key=lambda f: f.timestamp, reverse=True)
         except Exception:
             return []
         
     def load_chat_history(self) -> None:
+        """Load chat history from file."""
         try:
-            with open(self.HISTORY_FILE, 'r') as f:
-                with FileLock(f):
+            with FileLock(self.HISTORY_FILE) as f:
+                try:
                     data = json.load(f)
                     self.messages = [Message.from_dict(msg) for msg in data]
+                except json.JSONDecodeError:
+                    self.messages = []
         except Exception:
             self.messages = []
             
     def save_chat_history(self) -> None:
+        """Save chat history to file."""
         try:
-            with open(self.HISTORY_FILE, 'w') as f:
-                with FileLock(f):
-                    json.dump([msg.to_dict() for msg in self.messages], f, indent=2)
-        except Exception as e:
-            print(f"Failed to save chat history: {e}")
+            with FileLock(self.HISTORY_FILE) as f:
+                f.seek(0)
+                f.truncate()
+                json.dump([msg.to_dict() for msg in self.messages], f, indent=2)
+        except Exception:
+            pass
             
     def load_active_users(self) -> None:
+        """Load active users from file."""
         try:
-            with open(self.USERS_FILE, 'r') as f:
-                with FileLock(f):
+            with FileLock(self.USERS_FILE) as f:
+                try:
                     data = json.load(f)
                     self.active_users = set(data)
+                except json.JSONDecodeError:
+                    self.active_users = set()
         except Exception:
             self.active_users = set()
             
     def save_active_users(self) -> None:
+        """Save active users to file."""
         try:
-            with open(self.USERS_FILE, 'w') as f:
-                with FileLock(f):
-                    json.dump(list(self.active_users), f, indent=2)
-        except Exception as e:
-            print(f"Failed to save active users: {e}")
+            with FileLock(self.USERS_FILE) as f:
+                # Read existing users first
+                try:
+                    f.seek(0)
+                    existing_users = set(json.load(f))
+                except json.JSONDecodeError:
+                    existing_users = set()
+                
+                # Merge with current users
+                all_users = existing_users | self.active_users
+                
+                # Write back all users
+                f.seek(0)
+                f.truncate()
+                json.dump(list(all_users), f, indent=2)
+        except Exception:
+            pass
             
     def load_shared_files(self) -> None:
+        """Load shared files from file."""
         try:
-            with open(self.FILES_FILE, 'r') as f:
-                with FileLock(f):
+            with FileLock(self.FILES_FILE) as f:
+                try:
                     data = json.load(f)
                     self.shared_files = [SharedFile.from_dict(file) for file in data]
+                except json.JSONDecodeError:
+                    self.shared_files = []
         except Exception:
             self.shared_files = []
             
     def save_shared_files(self) -> None:
+        """Save shared files to file."""
         try:
-            with open(self.FILES_FILE, 'w') as f:
-                with FileLock(f):
-                    json.dump([file.to_dict() for file in self.shared_files], f, indent=2)
-        except Exception as e:
-            print(f"Failed to save shared files: {e}")
-            
-    def clear_all_users(self) -> None:
-        """Admin function to log out all users."""
-        try:
-            self.active_users.clear()
-            self.save_active_users()
-        except Exception as e:
-            print(f"Failed to clear users: {e}")
-            
-    def archive_chat_history(self) -> Tuple[bool, Optional[str]]:
-        """Admin function to archive current chat and start fresh.
-        
-        Returns:
-            Tuple[bool, Optional[str]]: (success, error_or_archive_path)
-        """
-        try:
-            # Create archives directory if it doesn't exist
-            archives_dir = os.path.join(os.path.dirname(self.HISTORY_FILE), 'archives')
-            os.makedirs(archives_dir, exist_ok=True)
-            
-            # Generate archive filename with timestamp
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            archive_path = os.path.join(archives_dir, f'chat_history_{timestamp}.json')
-            
-            # Copy current history to archive
-            shutil.copy2(self.HISTORY_FILE, archive_path)
-            
-            # Clear current history
-            self.messages.clear()
-            self.save_chat_history()
-            
-            return True, archive_path
-        except Exception as e:
-            return False, f"Failed to archive chat: {str(e)}"
-            
-    def archive_shared_files(self) -> Tuple[bool, Optional[str]]:
-        """Admin function to archive current shared files list and start fresh.
-        
-        Returns:
-            Tuple[bool, Optional[str]]: (success, error_or_archive_path)
-        """
-        try:
-            # Create archives directory if it doesn't exist
-            archives_dir = os.path.join(os.path.dirname(self.FILES_FILE), 'archives')
-            os.makedirs(archives_dir, exist_ok=True)
-            
-            # Generate archive filename with timestamp
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            archive_path = os.path.join(archives_dir, f'shared_files_{timestamp}.json')
-            
-            # Copy current shared files to archive
-            shutil.copy2(self.FILES_FILE, archive_path)
-            
-            # Clear current shared files
-            self.shared_files.clear()
-            self.save_shared_files()
-            
-            return True, archive_path
-        except Exception as e:
-            return False, f"Failed to archive shared files: {str(e)}"
-            
-    @classmethod
-    def verify_admin_passcode(cls, passcode: str) -> bool:
-        """Verify if the provided passcode matches the admin passcode."""
-        return passcode == cls.ADMIN_PASSCODE 
+            with FileLock(self.FILES_FILE) as f:
+                f.seek(0)
+                f.truncate()
+                json.dump([file.to_dict() for file in self.shared_files], f, indent=2)
+        except Exception:
+            pass
+
+    def clear_active_users(self):
+        """Clear all active users (admin function)."""
+        with FileLock(self.USERS_FILE):
+            with open(self.USERS_FILE, 'w') as f:
+                json.dump([], f)
+        self.active_users.clear() 

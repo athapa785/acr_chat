@@ -1,33 +1,35 @@
-# ACR Chat Application
+# ACR Chat
 
-A real-time chat application built with Python and PyQt5, supporting multiple instances and file sharing.
+A real-time chat application built with PyQt5 that allows users to communicate, share files, and manage conversations in a modern interface.
 
 ## Features
 
-- **Real-time Multi-instance Chat**: Multiple users can chat simultaneously with automatic synchronization
-- **File Sharing**: Share files between users with easy access to shared files
-- **User Management**: Track online users and their status
-- **Admin Controls**: Secure admin functions for user management and chat moderation
-- **Chat History**: Persistent chat history with automatic archiving
-- **Modern UI**: Clean and intuitive interface built with PyQt5
+- Real-time chat messaging
+- User presence tracking
+- File sharing capabilities
+- Dark/Light mode toggle
+- Admin controls for chat management
+- Clickable hyperlinks in messages
+- Modern Material Design-inspired UI
 
 ## Requirements
 
-- Python 3.6+
-- PyQt5 >= 5.15.0
+- Python 3.8+
+- PyQt5
+- qdarkstyle
 
 ## Installation
 
 1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/acr_chat.git
-   cd acr_chat
-   ```
+```bash
+git clone https://github.com/yourusername/acr_chat.git
+cd acr_chat
+```
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+2. Install the required packages:
+```bash
+pip install -r requirements.txt
+```
 
 ## Usage
 
@@ -36,21 +38,15 @@ Run the application:
 python -m acr_chat
 ```
 
-Multiple instances can be started to simulate different users.
-
 ## Admin Features
 
-- Clear online users list
-- Archive and clear chat history
-- Archive and clear shared files list
+The application includes admin functionality with the following features:
+- Log out all users
+- Archive chat history
+- Archive shared files
 
-Access admin features by clicking the gear icon (⚙) in the top-left corner.
-Default admin passcode is "acr2024".
+Admin passcode: admin123 (can be changed in the code)
 
-## Data Storage
+## License
 
-The application stores its data in the following locations:
-- Chat history: `~/.acr_chat/chat_history.json`
-- Active users: `~/.acr_chat/active_users.json`
-- Shared files: `~/.acr_chat/shared_files.json`
-- Archives: `~/.acr_chat/archives/` 
+This project is licensed under the MIT License - see the LICENSE file for details. 
