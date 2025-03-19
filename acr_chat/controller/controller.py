@@ -2,6 +2,7 @@ from typing import Optional, List
 from ..model.chat_model import ChatModel, Message, SharedFile
 from PyQt5.QtCore import QObject, pyqtSignal
 from datetime import datetime
+import os
 
 class ChatController(QObject):
     # Signals for view updates
@@ -13,30 +14,30 @@ class ChatController(QObject):
     
     ADMIN_PASSWORD = "admin123"  # Hardcoded admin password
     
-    def __init__(self):
+    def __init__(self, model=None):
         super().__init__()
-        self.model = ChatModel()
+        self.model = model or ChatModel()
         self.current_user: Optional[str] = None
         
-    def attempt_login(self, username: str, password: str = None) -> bool:
-        """Try to log in with the given username and optional admin password."""
-        if not username.strip():
-            self.login_failed.emit("Username cannot be empty")
-            return False
-            
-        # Check for admin login
-        if username.lower() == "admin":
-            if password != self.ADMIN_PASSWORD:
-                self.login_failed.emit("Invalid admin password")
+    def attempt_login(self, username: str, password: str) -> bool:
+        """Attempt to log in with the given credentials."""
+        try:
+            # Check for admin login
+            if username.lower() == "admin":
+                if password != self.ADMIN_PASSWORD:
+                    self.login_failed.emit("Invalid admin password")
+                    return False
+                    
+            success, error_msg = self.model.add_user(username)
+            if success:
+                self.current_user = username
+                self.user_added.emit(username)
+                return True
+            else:
+                self.login_failed.emit(error_msg or "Login failed")
                 return False
-                
-        success, error_msg = self.model.add_user(username)
-        if success:
-            self.current_user = username
-            self.user_added.emit(username)
-            return True
-        else:
-            self.login_failed.emit(error_msg or "Login failed")
+        except Exception as e:
+            self.login_failed.emit(str(e))
             return False
             
     def logout(self):
@@ -44,22 +45,28 @@ class ChatController(QObject):
         if self.current_user:
             success, _ = self.model.remove_user(self.current_user)
             if success:
-                # Notify other instances about the user removal
                 self.user_removed.emit(self.current_user)
-            self.current_user = None
+                self.current_user = None
             
-    def send_message(self, content: str):
-        """Send a message from the current user."""
-        if self.current_user and content.strip():
-            timestamp = datetime.now()
-            self.model.add_message(self.current_user, content, timestamp)
-            # Notify all instances about the new message
-            self.message_received.emit(self.current_user, content, timestamp)
-            # Also notify about any user changes
-            self.user_added.emit(self.current_user)
+    def send_message(self, message):
+        """Send a message to the chat."""
+        try:
+            # Check if it's a GIF message
+            if message.startswith('GIF: '):
+                gif_path = message[5:]  # Remove 'GIF: ' prefix
+                # Verify the GIF file exists
+                if not os.path.exists(gif_path):
+                    raise FileNotFoundError(f"GIF file not found: {gif_path}")
+                message = f"GIF: {gif_path}"
+            
+            # Add the message using the model's method
+            self.model.add_message(self.current_user, message)
+            
+        except Exception as e:
+            print(f"Error sending message: {e}")
             
     def get_all_users(self) -> List[str]:
-        """Get list of all active users."""
+        """Get a list of all active users."""
         return self.model.get_all_users()
         
     def get_chat_history(self) -> List[Message]:
@@ -72,14 +79,14 @@ class ChatController(QObject):
         
     def add_shared_file(self, filepath: str) -> bool:
         """Add a file to the shared files list."""
-        if self.current_user:
-            self.model.add_shared_file(filepath, self.current_user)
-            # Notify about the new file
-            self.files_updated.emit(self.model.get_shared_files())
-            # Also notify about any user changes
-            self.user_added.emit(self.current_user)
-            return True
-        return False
+        try:
+            if self.model.add_shared_file(filepath):
+                self.files_updated.emit(self.model.get_shared_files())
+                return True
+            return False
+        except Exception as e:
+            print(f"Error adding shared file: {e}")
+            return False
         
     def set_shared_directory(self, path: str):
         """Set and update the shared directory."""

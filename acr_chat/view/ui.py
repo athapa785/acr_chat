@@ -3,9 +3,9 @@ from PyQt5.QtWidgets import (
     QSplitter, QLabel, QMessageBox, QApplication, QDialog, QPushButton, QFrame, QMenu,
     QLineEdit, QDialogButtonBox, QVBoxLayout
 )
-from PyQt5.QtCore import Qt, QFileSystemWatcher, QTimer
-from PyQt5.QtGui import QCursor, QIcon
-from .components import ChatInput, ChatHistory, UsersList, DirectoryView, LoginDialog
+from PyQt5.QtCore import Qt, QFileSystemWatcher, QTimer, QPoint
+from PyQt5.QtGui import QCursor, QIcon, QTextCursor, QMovie
+from .components import ChatHistory, UsersList, DirectoryView, LoginDialog
 from ..controller.controller import ChatController
 from ..model.chat_model import SharedFile
 from datetime import datetime
@@ -15,15 +15,20 @@ import platform
 import json
 from typing import List
 import sys
+import re
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, controller=None):
         super().__init__()
         # Initialize instance variables
-        self.controller = ChatController()
+        self.controller = controller or ChatController()
         self.users_list = None
         self.chat_history = None
-        self.chat_input = None
         self.directory_view = None
         
         # Initialize timers for file checking
@@ -35,6 +40,12 @@ class MainWindow(QMainWindow):
         
         # Initialize login
         self.init_login()
+
+        self.last_modified_times = {
+        'chat': None,
+        'users': None,
+        'files': None
+    }
         
     def setup_signals(self):
         """Set up signal connections."""
@@ -76,52 +87,43 @@ class MainWindow(QMainWindow):
                     json.dump([], f)
 
         # Start the timer to check files every 100ms
-        self.update_timer.start(100)
+        self.update_timer.start(400)
         
     def check_files(self):
-        """Check files for changes and update UI accordingly."""
-        try:
-            # Check chat history - always update to ensure we don't miss changes
-            messages = self.controller.model.get_all_messages()
-            if self.chat_history:
-                # Store current scroll position
-                current_scroll = self.chat_history.messages.verticalScrollBar().value()
-                
-                # Only update if messages have changed
-                current_messages = self.chat_history.messages.toPlainText()
-                new_messages = "\n".join(f"[{msg.timestamp.strftime('%H:%M:%S')}] <b>{msg.sender}:</b> {msg.content}" for msg in messages)
-                
-                if current_messages != new_messages:
-                    self.chat_history.messages.clear()
-                    for msg in messages:
-                        self.chat_history.messages.append(f'[{msg.timestamp.strftime("%H:%M:%S")}] <b>{msg.sender}:</b> {msg.content}')
-                    
-                    # Restore scroll position
-                    self.chat_history.messages.verticalScrollBar().setValue(current_scroll)
-                    
-            # Check users list
-            users = self.controller.get_all_users()
-            if self.users_list:
-                current_users = set()
-                for i in range(self.users_list.users_list.count()):
-                    current_users.add(self.users_list.users_list.item(i).text())
-                if current_users != set(users):
-                    self.users_list.update_users(users)
+        """Check files for changes and update UI accordingly (efficient)."""
+        files = {
+            'chat': self.controller.model.HISTORY_FILE,
+            'users': self.controller.model.USERS_FILE,
+            'files': self.controller.model.FILES_FILE
+        }
 
-            # Check shared files
+        for key, path in files.items():
+            try:
+                modified_time = os.path.getmtime(path)
+                if self.last_modified_times[key] != modified_time:
+                    self.last_modified_times[key] = modified_time
+                    self.update_gui_element(key)
+            except Exception as e:
+                logger.debug(f"Error checking {key} file: {e}")
+
+    def update_gui_element(self, element):
+        if element == 'chat':
+            messages = self.controller.model.get_all_messages()
+            self.update_chat_history(messages)
+        elif element == 'users':
+            users = self.controller.get_all_users()
+            self.users_list.update_users(users)
+        elif element == 'files':
             files = self.controller.model.get_shared_files()
-            if self.directory_view:
-                current_files = set()
-                for row in range(self.directory_view.files_table.rowCount()):
-                    file_path = self.directory_view.files_table.item(row, 0).data(Qt.UserRole)
-                    current_files.add(file_path)
-                new_files = set(f.filepath for f in files)
-                if current_files != new_files:
-                    self.directory_view.update_files(files)
-                    
-        except Exception:
-            pass  # Silently handle any errors during file checking
-        
+            self.directory_view.update_files(files)
+
+    def update_chat_history(self, messages):
+        if self.chat_history:
+            self.chat_history.clear()  # Clears the messages layout
+            for msg in messages:
+                self.chat_history.add_message(msg.sender, msg.content, msg.timestamp)
+            self.chat_history.scroll_to_bottom()
+            
     def init_ui(self):
         # Create main widget and layout
         main_widget = QWidget()
@@ -187,14 +189,69 @@ class MainWindow(QMainWindow):
         separator.setStyleSheet("background-color: #E0E0E0;")  # Lighter color
         center_layout.addWidget(separator)
         
+        # Chat history
         self.chat_history = ChatHistory()
-        self.chat_input = ChatInput()
-        
-        # Set username in chat history
         self.chat_history.set_username(self.controller.current_user)
-        
+        self.chat_history.message_sent.connect(self.handle_media_message)
         center_layout.addWidget(self.chat_history, stretch=1)
-        center_layout.addWidget(self.chat_input)
+        
+        # Message input area
+        input_layout = QHBoxLayout()
+        
+        # Emoji/GIF button
+        self.media_button = QPushButton("😊")
+        self.media_button.setObjectName("media_button")  # Set object name for event filter
+        self.media_button.setFixedSize(40, 40)
+        self.media_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f5f5f5;
+                border: 1px solid #ddd;
+                border-radius: 20px;
+                font-size: 20px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        self.media_button.clicked.connect(self.show_media_picker)
+        input_layout.addWidget(self.media_button)
+        
+        # Message input
+        self.message_input = QLineEdit()
+        self.message_input.setObjectName("message_input")
+        self.message_input.setPlaceholderText("Type your message...")
+        self.message_input.returnPressed.connect(self.send_message)
+        self.message_input.setStyleSheet("""
+            QLineEdit {
+                padding: 8px;
+                border: 1px solid #ddd;
+                border-radius: 20px;
+                background-color: white;
+            }
+            QLineEdit:focus {
+                border: 1px solid #2196F3;
+            }
+        """)
+        input_layout.addWidget(self.message_input)
+        
+        # Send button
+        self.send_button = QPushButton("Send")
+        self.send_button.clicked.connect(self.send_message)
+        self.send_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 20px;
+                padding: 8px 20px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        input_layout.addWidget(self.send_button)
+        
+        center_layout.addLayout(input_layout)
         
         # Create right panel for directory view
         self.directory_view = DirectoryView()
@@ -215,7 +272,6 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter)
         
         # Connect signals
-        self.chat_input.message_sent.connect(self.handle_message_sent)
         self.users_list.user_selected.connect(self.handle_user_selected)
         self.directory_view.file_selected.connect(self.handle_file_selected)
         self.directory_view.file_added.connect(self.handle_file_added)
@@ -242,15 +298,11 @@ class MainWindow(QMainWindow):
         event.accept()
         
     # Signal handlers
-    def handle_message_sent(self, message: str):
-        """Handle when a message is sent from this instance."""
-        self.controller.send_message(message)
-        messages = self.controller.model.get_all_messages()
+    def handle_message_received(self, sender: str, content: str, timestamp: datetime):
+        """Handle a new message being received."""
         if self.chat_history:
-            self.chat_history.clear()
-            for msg in messages:
-                self.chat_history.add_message(msg.sender, msg.content, msg.timestamp)
-                
+            self.chat_history.add_message(sender, content, timestamp)
+            
     def handle_user_selected(self, username: str):
         # TODO: Implement private messaging or user info display
         pass
@@ -275,11 +327,6 @@ class MainWindow(QMainWindow):
                 subprocess.run(['xdg-open', filepath])
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not open file: {e}")
-            
-    def handle_message_received(self, sender: str, content: str, timestamp: datetime):
-        """Handle a new message being received."""
-        if self.chat_history:
-            self.chat_history.add_message(sender, content, timestamp)
             
     def handle_user_added(self, username: str):
         """Handle a user being added."""
@@ -384,6 +431,41 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Success", f"Shared files list archived to {archive_file}")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to archive files: {e}")
+
+    def show_media_picker(self):
+        """Show the media picker above the emoji button."""
+        logger.debug("Media picker button clicked")
+        # Get the global position of the media button
+        button_pos = self.media_button.mapToGlobal(self.media_button.rect().topLeft())
+        logger.debug(f"Button position: {button_pos}")
+        # Position the media picker above the button
+        self.chat_history.show_media_picker(button_pos)
+        logger.debug("show_media_picker called on chat_history")
+        
+    def handle_media_message(self, message):
+        """Handle messages from the media picker (emojis and GIFs)."""
+        if message.startswith('GIF: '):
+            # For GIFs, send the message directly
+            self.handle_message_sent(message)
+        else:
+            # For emojis, append to the current input
+            current_text = self.message_input.text()
+            self.message_input.setText(current_text + message)
+            self.message_input.setFocus()
+
+    def handle_message_sent(self, message: str):
+        """Handle when a message is sent from this instance."""
+        if message:
+            self.controller.send_message(message)
+            # The message will be added to chat history through handle_message_received
+            # when the controller emits the message_received signal
+            
+    def send_message(self):
+        """Send the current message from the input field."""
+        message = self.message_input.text().strip()
+        if message:
+            self.handle_message_sent(message)
+            self.message_input.clear()
 
 class AdminDialog(QDialog):
     def __init__(self, parent=None):

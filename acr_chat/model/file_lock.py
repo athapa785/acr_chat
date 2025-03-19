@@ -10,8 +10,13 @@ class FileLock:
         # Create the directory if it doesn't exist
         os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
         
-        # Open the file in append mode to create it if it doesn't exist
-        self.lock_file = open(self.file_path, 'a+')
+        # If the file doesn't exist, create it in write mode
+        if not os.path.exists(self.file_path):
+            with open(self.file_path, 'w') as f:
+                f.write('[]')  # Initialize with empty JSON array
+                
+        # Open the file in read-write mode
+        self.lock_file = open(self.file_path, 'r+')
         
         # Acquire an exclusive lock
         fcntl.flock(self.lock_file.fileno(), fcntl.LOCK_EX)
